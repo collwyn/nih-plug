@@ -1,22 +1,85 @@
-name: Rust
+name: Automated Windows Build
 
 on:
   push:
-    branches: [ "master" ]
+    branches:
+      - '**'
+    tags:
+      - '*'
   pull_request:
-    branches: [ "master" ]
+    branches:
+      - master
+  workflow_dispatch:
 
-env:
-  CARGO_TERM_COLOR: always
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  build:
-
-    runs-on: ubuntu-latest
+  package-windows:
+    name: Package Windows plugin binaries
+    runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      # -----------------------------
+      # CHECKOUT + SUBMODULES + FULL HISTORY
+      # -----------------------------
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Ensure submodules are initialized
+        run: git submodule update --init --recursive
+
+      - name: Fetch all git history
+        run: git fetch --force --prune --tags --unshallow || true
+
+      # -----------------------------
+      # CACHE
+      # -----------------------------
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: windows-build-cache
+
+      # -----------------------------
+      # RUST TOOLCHAIN
+      # -----------------------------
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      # -----------------------------
+      # BUILD + PACKAGE
+      # -----------------------------
+      - name: Package all targets from bundler.toml
+        run: |
+          package_args=()
+          for package in $(cargo xtask known-packages); do
+            package_args+=("-p" "$package")
+          done
+
+          cargo xtask bundle "${package_args[@]}" --release
+
+      # -----------------------------
+      # ARCHIVE + ARTIFACT
+      # -----------------------------
+      - name: Determine build archive name
+        run: |
+          echo "ARCHIVE_NAME=nih-plugs-$(date -u +"%Y-%m-%d-%H%M%S")-windows" >> "$GITHUB_ENV"
+
+      - name: Move packaged plugins into archive directory
+        run: |
+          mkdir -p "$ARCHIVE_NAME/$ARCHIVE_NAME"
+          mv target/bundled/* "$ARCHIVE_NAME/$ARCHIVE_NAME"
+
+      - name: Add Windows README
+        run: cp ".github/workflows/readme-Windows.txt" "$ARCHIVE_NAME/$ARCHIVE_NAME/README.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: ${{ env.ARCHIVE_NAME }}
